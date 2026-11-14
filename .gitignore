@@ -1,0 +1,13 @@
+/mission_docs/
+
+# 비밀정보: API 키를 파일로 두는 경우에도 저장소에 올라가지 않게 한다
+.env
+.env.*
+
+# Python 실행 시 자동 생성되는 파일
+__pycache__/
+*.pyc
+.venv/
+
+# macOS
+.DS_Store
