@@ -12,19 +12,23 @@ from __future__ import annotations
 import argparse
 import sys
 
-from gitgen import git_collector, safe_mode
+from gitgen import ai_client, git_collector, prompts, safe_mode
 
 DEFAULT_MODEL = "gemini-3.5-flash"
 DEFAULT_TEMPERATURE = 0.3
-DEFAULT_MAX_TOKENS = 1024
+DEFAULT_MAX_TOKENS = 4096  # 실측: 생각 900 + 출력 120 ≈ 1020 → 큰 diff까지 고려해 약 4배
 
 
 def info(message: str) -> None:
-    print(f"[INFO] {message}")
+    print(f"[INFO] {message}", flush=True)
+
+
+def done(message: str) -> None:
+    print(f"[DONE] {message}", flush=True)
 
 
 def error(message: str) -> None:
-    print(f"[ERROR] {message}", file=sys.stderr)
+    print(f"[ERROR] {message}", file=sys.stderr, flush=True)
 
 
 def print_section(title: str, body: str) -> None:
@@ -81,7 +85,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     info(f"현재 브랜치: {changes.branch}")
-    info(f"Git status 수집 완료: {len(changes.files) + len(changes.untracked)}개 파일 변경 감지")
+    count = len(changes.files) + len(changes.untracked)
+    if args.command == "commit":
+        info(f"Git status 수집 완료: {count}개 파일 변경 감지")
+    else:
+        info(f"브랜치 변경 파일 수집 완료: {count}개 ({args.base}...HEAD 기준)")
     if changes.is_empty:
         info("변경 사항이 없습니다. AI를 호출하지 않고 종료합니다.")
         return 0
@@ -101,15 +109,46 @@ def main(argv: list[str] | None = None) -> int:
     else:
         info("안전 모드 꺼짐: diff 원문이 그대로 전송됩니다. 민감정보가 없는지 확인하세요.")
 
-    # 3) --dry-run: AI 호출 없이 전송될 내용만 확인
+    # 3) 프롬프트 구성 (마스킹된 diff 사용)
+    if args.command == "commit":
+        prompt = prompts.build_commit_prompt(changes, diff)
+    else:
+        prompt = prompts.build_pr_prompt(changes, diff)
+
+    # 4) --dry-run: AI 호출 없이 전송될 내용만 확인
     if args.dry_run:
-        file_lines = changes.files + [f"? {path} (새 파일)" for path in changes.untracked]
-        print_section("변경 파일", "\n".join(file_lines))
-        print_section("AI로 보낼 diff", diff or "(diff 내용 없음)")
+        print_section("AI로 보낼 프롬프트", prompt)
         info("--dry-run: AI를 호출하지 않았습니다 (API 호출 0회).")
         return 0
 
-    info("AI 호출은 3단계에서 연결합니다.")
+    # 5) AI 호출 (1회). 키가 없으면 요청을 보내기 전에 멈춘다.
+    try:
+        api_key = ai_client.get_api_key()
+    except ai_client.AIError as e:
+        error(str(e))
+        return 1
+
+    info(f"AI API 요청 중... (모델: {args.model}, temperature: {args.temperature}, "
+         f"max_tokens: {args.max_tokens})")
+    try:
+        result = ai_client.generate(prompt, api_key=api_key, model=args.model,
+                                    temperature=args.temperature, max_tokens=args.max_tokens)
+    except ai_client.AIError as e:
+        error(str(e))
+        info("API 호출 횟수: 1회 (실패)")
+        return 1
+
+    info("API 호출 횟수: 1회")
+    info(f"토큰 사용: 입력 {result.prompt_tokens}, 출력 {result.output_tokens}, "
+         f"생각 {result.thinking_tokens} (종료 이유: {result.finish_reason})")
+    if result.finish_reason == "MAX_TOKENS":
+        info("주의: 응답이 max_tokens 한도에서 잘렸을 수 있습니다. --max-tokens 값을 늘려 보세요.")
+
+    # 6) 결과 출력 (형식 검사·다듬기는 5단계에서 추가)
+    title = "Commit Message" if args.command == "commit" else "PR Draft"
+    done(f"{'커밋 메시지' if args.command == 'commit' else 'PR 초안'} 생성 완료")
+    print_section(title, result.text)
+    info("생성된 문구는 초안입니다. 검토한 뒤 적용하세요.")
     return 0
 
 
