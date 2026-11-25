@@ -11,6 +11,8 @@ import re
 
 # 이미 가린 값([MASKED_...])을 다시 가리지 않기 위한 조건
 _NOT_MASKED = r"(?!\[MASKED_)"
+# 값이 "GEMINI_API_KEY"처럼 대문자·밑줄로 된 환경변수 "이름"이면 비밀값이 아니므로 가리지 않는다
+_NOT_ENV_NAME = r"(?!(?-i:[A-Z][A-Z0-9]*_[A-Z0-9_]*)[\"'])"
 
 # (규칙 이름, 정규식, 바꿀 글자)
 RULES: list[tuple[str, re.Pattern[str], str]] = [
@@ -26,7 +28,7 @@ RULES: list[tuple[str, re.Pattern[str], str]] = [
     # password = "...", "api_key": "..." 처럼 따옴표로 감싼 값 (4글자 이상)
     ("비밀번호·토큰 값",
      re.compile(r"(?i)(\w*(?:password|passwd|secret|token|api_?key)\w*[\"']?\s*[:=]\s*)"
-                r"([\"'])" + _NOT_MASKED + r"([^\"'\n]{4,})\2"),
+                r"([\"'])" + _NOT_MASKED + _NOT_ENV_NAME + r"([^\"'\n]{4,})\2"),
      r"\1\2[MASKED_SECRET]\2"),
     # .env 형식: DB_PASSWORD=값 (따옴표 없음). 이름이 키워드로 "끝나는" 경우만 본다.
     # (MAX_TOKENS = 1024 같은 일반 설정값을 비밀값으로 오인하지 않기 위해)
