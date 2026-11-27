@@ -56,6 +56,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="diff 속 API 키·이메일 등을 가린 뒤 전송 (기본: 켜짐)")
     common.add_argument("--dry-run", action="store_true",
                         help="AI를 호출하지 않고, AI로 보낼 변경 내용만 출력")
+    common.add_argument("--context", metavar="TEXT",
+                        help='변경 이유를 직접 알려 줌 (선택, 예: --context "응답이 잘려서 한도를 올림")')
 
     sub = parser.add_subparsers(dest="command", required=True, metavar="{commit,pr}")
     sub.add_parser("commit", parents=[common], help="커밋 메시지 생성")
@@ -97,10 +99,18 @@ def main(argv: list[str] | None = None) -> int:
     for note in changes.notes:
         info(note)
 
-    # 2) 안전 모드
+    context = (args.context or "").strip() or None
+    if context:
+        info(f"변경 이유 제공됨 (--context): {len(context)}자")
+
+    # 2) 안전 모드 (AI로 가는 글 전부: diff와 변경 이유)
     diff = changes.diff
     if args.safe_mode:
         diff, counts = safe_mode.mask_sensitive(diff)
+        if context:
+            context, context_counts = safe_mode.mask_sensitive(context)
+            for name, n in context_counts.items():
+                counts[name] = counts.get(name, 0) + n
         if counts:
             detail = ", ".join(f"{name} {n}건" for name, n in counts.items())
             info(f"안전 모드: 민감정보 마스킹 ({detail})")
@@ -109,15 +119,16 @@ def main(argv: list[str] | None = None) -> int:
     else:
         info("안전 모드 꺼짐: diff 원문이 그대로 전송됩니다. 민감정보가 없는지 확인하세요.")
 
-    # 3) 프롬프트 구성 (마스킹된 diff 사용)
+    # 3) 프롬프트 구성: 시스템 지시(형식·규칙) + 사용자 메시지(마스킹된 diff 등)
     if args.command == "commit":
-        prompt = prompts.build_commit_prompt(changes, diff)
+        prompt = prompts.build_commit_prompt(changes, diff, context)
     else:
-        prompt = prompts.build_pr_prompt(changes, diff)
+        prompt = prompts.build_pr_prompt(changes, diff, context)
 
     # 4) --dry-run: AI 호출 없이 전송될 내용만 확인
     if args.dry_run:
-        print_section("AI로 보낼 프롬프트", prompt)
+        print_section("AI로 보낼 시스템 지시", prompt.system)
+        print_section("AI로 보낼 사용자 메시지", prompt.user)
         info("--dry-run: AI를 호출하지 않았습니다 (API 호출 0회).")
         return 0
 
@@ -131,8 +142,9 @@ def main(argv: list[str] | None = None) -> int:
     info(f"AI API 요청 중... (모델: {args.model}, temperature: {args.temperature}, "
          f"max_tokens: {args.max_tokens})")
     try:
-        result = ai_client.generate(prompt, api_key=api_key, model=args.model,
-                                    temperature=args.temperature, max_tokens=args.max_tokens)
+        result = ai_client.generate(prompt.user, system=prompt.system, api_key=api_key,
+                                    model=args.model, temperature=args.temperature,
+                                    max_tokens=args.max_tokens)
     except ai_client.AIError as e:
         error(str(e))
         info("API 호출 횟수: 1회 (실패)")
@@ -141,8 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     info("API 호출 횟수: 1회")
     info(f"토큰 사용: 입력 {result.prompt_tokens}, 출력 {result.output_tokens}, "
          f"생각 {result.thinking_tokens} (종료 이유: {result.finish_reason})")
-    if result.finish_reason == "MAX_TOKENS":
-        info("주의: 응답이 max_tokens 한도에서 잘렸을 수 있습니다. --max-tokens 값을 늘려 보세요.")
+    # (한도에서 잘린 응답은 ai_client가 실패로 처리하므로 여기까지 오지 않는다)
 
     # 6) 결과 출력 (형식 검사·다듬기는 5단계에서 추가)
     title = "Commit Message" if args.command == "commit" else "PR Draft"
