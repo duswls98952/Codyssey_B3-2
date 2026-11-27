@@ -26,8 +26,8 @@ python3 main.py commit | pr   (Git 프로젝트 루트에서)
 | AI API | Google Gemini API 키 ([Google AI Studio](https://aistudio.google.com/)에서 발급, 무료 등급으로 동작 확인) |
 
 ```bash
-git clone <이 저장소 주소>
-cd <저장소 폴더>
+git clone https://github.com/duswls98952/Codyssey_B3-2.git
+cd Codyssey_B3-2
 python3 main.py --help
 ```
 
