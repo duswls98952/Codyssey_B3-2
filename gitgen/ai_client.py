@@ -44,22 +44,27 @@ def get_api_key() -> str:
     return key
 
 
-def build_request_body(prompt: str, temperature: float, max_tokens: int) -> dict:
+def build_request_body(prompt: str, temperature: float, max_tokens: int,
+                       system: str | None = None) -> dict:
     """요청 본문(JSON). CLI 옵션이 generationConfig로 들어간다."""
-    return {
+    body: dict = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": temperature,      # --temperature
             "maxOutputTokens": max_tokens,   # --max-tokens
         },
     }
+    if system:
+        # 시스템 지시: 대화 내용과 따로, "어떻게 답할지"를 정하는 칸
+        body["systemInstruction"] = {"parts": [{"text": system}]}
+    return body
 
 
 def generate(prompt: str, *, api_key: str, model: str,
-             temperature: float, max_tokens: int) -> AIResult:
+             temperature: float, max_tokens: int, system: str | None = None) -> AIResult:
     """Gemini에 요청을 1회 보내고 결과를 돌려준다. 자동 재시도는 하지 않는다."""
     url = f"{BASE_URL}/{model}:generateContent"           # --model은 주소에 들어간다
-    body = json.dumps(build_request_body(prompt, temperature, max_tokens)).encode("utf-8")
+    body = json.dumps(build_request_body(prompt, temperature, max_tokens, system)).encode("utf-8")
     request = urllib.request.Request(
         url, data=body, method="POST",
         headers={
@@ -142,10 +147,14 @@ def _parse_response(raw: str) -> AIResult:
     parts = candidate.get("content", {}).get("parts", [])
     text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
 
+    if finish == "MAX_TOKENS":
+        # 한도에서 멈췄다면 결과는 확실히 미완성이다. 일부라도 썼든 못 썼든
+        # 잘린 글을 "완료"로 보여 주지 않고 실패로 처리한다(복사해 쓰는 사고 방지).
+        output = usage.get("candidatesTokenCount", 0)
+        state = "글을 쓰기 전에 멈췄습니다" if not text else "글을 쓰는 도중에 잘렸습니다"
+        raise AIError(f"응답 미완성: max_tokens 한도에 걸려 {state} "
+                      f"(생각 {thinking}, 출력 {output}). --max-tokens 값을 늘려 다시 실행하세요.")
     if not text:
-        if finish == "MAX_TOKENS":
-            raise AIError("응답이 비어 있습니다: max_tokens 한도에 걸려 글을 쓰기 전에 멈췄습니다 "
-                          f"(생각에 쓴 토큰 {thinking}개). --max-tokens 값을 늘려 다시 실행하세요.")
         raise AIError(f"응답이 비어 있습니다 (finishReason: {finish}).")
 
     return AIResult(
