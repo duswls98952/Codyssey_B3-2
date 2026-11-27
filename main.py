@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from gitgen import ai_client, git_collector, prompts, safe_mode
+from gitgen import ai_client, formatter, git_collector, prompts, safe_mode
 
 DEFAULT_MODEL = "gemini-3.5-flash"
 DEFAULT_TEMPERATURE = 0.3
@@ -127,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 4) --dry-run: AI 호출 없이 전송될 내용만 확인
     if args.dry_run:
+        print_section("변경 요약", formatter.summarize_changes(changes))
         print_section("AI로 보낼 시스템 지시", prompt.system)
         print_section("AI로 보낼 사용자 메시지", prompt.user)
         info("--dry-run: AI를 호출하지 않았습니다 (API 호출 0회).")
@@ -155,10 +156,24 @@ def main(argv: list[str] | None = None) -> int:
          f"생각 {result.thinking_tokens} (종료 이유: {result.finish_reason})")
     # (한도에서 잘린 응답은 ai_client가 실패로 처리하므로 여기까지 오지 않는다)
 
-    # 6) 결과 출력 (형식 검사·다듬기는 5단계에서 추가)
-    title = "Commit Message" if args.command == "commit" else "PR Draft"
+    # 6) 형식 검사·다듬기 (후처리: AI를 다시 부르지 않는다)
+    if args.command == "commit":
+        formatted = formatter.format_commit(result.text, formatter.changed_paths(changes))
+    else:
+        formatted = formatter.format_pr(result.text)
+    info(f"형식 검사 완료: 보정 {formatted.count('FIX')}건, 경고 {formatted.count('WARN')}건")
+
+    # 7) 결과 출력: 변경 요약 → 복사할 결과 → 검사 내역
     done(f"{'커밋 메시지' if args.command == 'commit' else 'PR 초안'} 생성 완료")
-    print_section(title, result.text)
+    print_section("변경 요약", formatter.summarize_changes(changes))
+    if args.command == "commit":
+        print_section("Commit Message", formatted.text)
+    else:
+        print_section("PR Title", formatted.title)
+        print_section("PR Body", formatted.body)
+    print_section("형식 검사", formatter.render_checks(formatted.checks))
+    if formatted.count("WARN"):
+        info("[WARN] 항목을 확인하고 필요하면 직접 고치세요.")
     info("생성된 문구는 초안입니다. 검토한 뒤 적용하세요.")
     return 0
 
